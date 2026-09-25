@@ -454,7 +454,26 @@ record RecordMapperImpl(MethodHandles.Lookup lookup, DecoderFactory factory, Cla
         return argument;
     }
 
+    // the classes of the JSON values of java21.util.json (the parser creates the same ones)
+    private static final Class<?> JSON_NULL_CLASS = JsonNull.of().getClass();
+    private static final Class<?> JSON_STRING_CLASS = JsonString.of("").getClass();
+    private static final Class<?> JSON_NUMBER_CLASS = JsonNumber.of(0).getClass();
+    private static final Class<?> JSON_OBJECT_CLASS = JsonObject.of(Map.of()).getClass();
+    private static final Class<?> JSON_ARRAY_CLASS = JsonArray.of(List.of()).getClass();
+    private static final Class<?> JSON_BOOLEAN_CLASS = JsonBoolean.of(true).getClass();
+
+    // The values of the library are recognized by their class: on JDK 21, instanceof JsonNull
+    // is slow if it fails, as JsonNull is an interface, and it would double the time of reading.
+    // Other implementations of the (non-sealed) JSON interfaces are checked with instanceof.
     /*private*/ static boolean isJsonNull(JsonValue value) {
+        var type = value.getClass();
+        if (type == JSON_NULL_CLASS) {
+            return true;
+        }
+        if (type == JSON_STRING_CLASS || type == JSON_NUMBER_CLASS || type == JSON_OBJECT_CLASS
+                || type == JSON_ARRAY_CLASS || type == JSON_BOOLEAN_CLASS) {
+            return false;
+        }
         return value instanceof JsonNull;
     }
 

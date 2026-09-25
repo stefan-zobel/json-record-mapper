@@ -46,32 +46,35 @@ import java.util.concurrent.TimeUnit;
 //   the strings and numbers they have converted once, so this measures the cached path, and
 // - including the parsing of the JSON text on every call (*ParseAndMap), end to end.
 // parseOnly measures the parsing alone. *ToJson writes the order as a JsonObject (without
-// generating the JSON text).
+// generating the JSON text). decoderHandleField and decoderHandleConstant call the method
+// handle of the RecordMapper's decoder directly, without the proxy of MethodHandleProxies,
+// from a field and from a constant.
 //
-// Results (JDK 21.0.3, -prof gc; error margins of 12-18 %):
-// Benchmark                                                     Mode  Cnt      Score      Error   Units
-// RecordMapperBench.handwrittenMap                              avgt   10    730,519 ±   90,693   ns/op
-// RecordMapperBench.handwrittenMap:gc.alloc.rate.norm           avgt   10   1304,005 ±    0,001    B/op
-// RecordMapperBench.handwrittenParseAndMap                      avgt   10   7136,703 ± 1268,046   ns/op
-// RecordMapperBench.handwrittenParseAndMap:gc.alloc.rate.norm   avgt   10  17808,049 ±    0,009    B/op
-// RecordMapperBench.parseOnly                                   avgt   10   4342,407 ±  530,551   ns/op
-// RecordMapperBench.parseOnly:gc.alloc.rate.norm                avgt   10  12072,030 ±    0,004    B/op
-// RecordMapperBench.recordMapperMap                             avgt   10   1455,214 ±  236,095   ns/op
-// RecordMapperBench.recordMapperMap:gc.alloc.rate.norm          avgt   10   1328,010 ±    0,002    B/op
-// RecordMapperBench.recordMapperParseAndMap                     avgt   10   7123,985 ±  810,196   ns/op
-// RecordMapperBench.recordMapperParseAndMap:gc.alloc.rate.norm  avgt   10  17832,049 ±    0,006    B/op
-// End to end, the RecordMapper is as fast as the handwritten code (parsing takes about 60 %);
-// on the cached path it takes about twice as long, with almost the same allocation.
-//
-// Writing JSON (JDK 21.0.3, -prof gc):
-// RecordMapperBench.handwrittenToJson                      avgt   10   3014,645 ± 244,251   ns/op
-// RecordMapperBench.handwrittenToJson:gc.alloc.rate.norm   avgt   10  15464,021 ±   0,002    B/op
-// RecordMapperBench.recordMapperToJson                     avgt   10   3913,762 ± 241,702   ns/op
-// RecordMapperBench.recordMapperToJson:gc.alloc.rate.norm  avgt   10  15176,027 ± 191,237    B/op
-// The RecordMapper takes about 30 % longer than the handwritten code, with the same allocation.
+// Results (-f 3 -wi 5 -i 10 -prof gc, heap of 2 GB, see @Fork), in ns/op:
+// Benchmark                                    JDK 21.0.3          JDK 25.0.2
+// RecordMapperBench.handwrittenMap              595 ±  16           599 ±   34
+// RecordMapperBench.recordMapperMap             651 ±  43           711 ±  105
+// RecordMapperBench.decoderHandleField          578 ±   8           602 ±   31
+// RecordMapperBench.decoderHandleConstant       547 ±   5           585 ±   88
+// RecordMapperBench.parseOnly                  3673 ± 102          5513 ± 1187
+// RecordMapperBench.handwrittenParseAndMap     5053 ± 111          6045 ±  868
+// RecordMapperBench.recordMapperParseAndMap    5714 ± 314          6403 ±  892
+// RecordMapperBench.handwrittenToJson          2992 ± 142          3392 ±  123
+// RecordMapperBench.recordMapperToJson         4274 ± 202          4013 ±  415
+// The allocation is the same (*Map 1304 B/op, 24 B/op more with the proxy on JDK 21, *ToJson
+// about 15.2 KB/op). Reading on the cached path is about as fast as the handwritten code; the
+// proxy of MethodHandleProxies costs about 30 ns on JDK 21 and nothing on JDK 25, and a constant
+// handle is not faster than one in a field. Before, reading took twice as long on JDK 21, because
+// of the negative check value instanceof JsonNull (JsonNull is an interface, such checks are
+// slow on JDK 21 and fast since JDK 23); RecordMapperImpl.isJsonNull avoids it for the values of
+// java21.util.json. Writing takes about 20 % (JDK 25) to 45 % (JDK 21) longer than the handwritten
+// code; on JDK 21, the type switch of EncoderFactory.encodeValue (case JsonValue first) and the
+// lookup of the registered encoders cost about 300-600 ns, but a dispatch per class (ClassValue)
+// that keeps their semantics was not measurably faster.
 @Warmup(iterations = 5, time = 1, timeUnit = TimeUnit.SECONDS)
 @Measurement(iterations = 5, time = 1, timeUnit = TimeUnit.SECONDS)
-@Fork(2)
+// a fixed heap size: on newer JDKs, the heap size that G1 chooses changes the results of writing
+@Fork(value = 2, jvmArgsAppend = { "-Xms2g", "-Xmx2g" })
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
 @State(Scope.Benchmark)
@@ -88,8 +91,8 @@ public class RecordMapperBench {
     private static final RecordMapper RECORD_MAPPER = RecordMapper.of(MethodHandles.lookup());
 
     // The decoder of the RecordMapper for Order, the method handle that the proxy returned by
-    // MethodHandleProxies calls: as a constant, the JIT can inline the whole handle tree, in
-    // a field it cannot (decoderHandle*). It is taken from the implementation by reflection.
+    // MethodHandleProxies calls, as a constant and in a field (decoderHandle*). It is taken from
+    // the implementation by reflection.
     private static final MethodHandle DECODER_CONSTANT = decoderHandle(Order.class);
 
     private static final String JSON = orderJson(10);

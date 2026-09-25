@@ -3330,4 +3330,71 @@ public class RecordMapperTest {
                 { "age": 7 }
                 """, Profile.class));
     }
+
+    // Own implementations of the (non-sealed) JSON interfaces
+
+    record OwnNull() implements JsonNull {
+        @Override
+        public String toString() {
+            return "null";
+        }
+    }
+
+    record OwnString(String value) implements JsonString {
+        @Override
+        public String asString() {
+            return value;
+        }
+
+        @Override
+        public String toString() {
+            return "\"" + value + "\"";
+        }
+    }
+
+    record Nicknamed(String name, String nick) {}
+
+    @Test
+    @DisplayName("Own implementations of JsonNull and JsonString are read like those of the library")
+    void ownJsonImplementationsAreRead() {
+        var recordMapper = RecordMapper.of(MethodHandles.lookup());
+
+        var json = JsonObject.of(Map.of("name", new OwnString("Bob"), "nick", new OwnNull()));
+        assertEquals(new Nicknamed("Bob", null), recordMapper.fromTyped(json, Nicknamed.class));
+        json = JsonObject.of(Map.of("name", new OwnString("Bob"), "nick", new OwnString("B")));
+        assertEquals(new Nicknamed("Bob", "B"), recordMapper.fromTyped(json, Nicknamed.class));
+    }
+
+    static final class SubDecimal extends BigDecimal {
+        private static final long serialVersionUID = 1L;
+
+        SubDecimal(String value) {
+            super(value);
+        }
+    }
+
+    @Test
+    @DisplayName("A value is written by the first matching rule: registered encoder, JSON value, built-in type")
+    void writingPrecedence() {
+        record Labels(JsonString label, JsonValue extra, List<JsonValue> values) {}
+        record Tagged(String tag, BigDecimal price) {}
+
+        // records that implement a JSON interface are written unchanged, not as JSON objects
+        var recordMapper = RecordMapper.of(MethodHandles.lookup());
+        var labels = new Labels(new OwnString("a"), new OwnNull(), List.of(new OwnString("b"), new OwnNull()));
+        assertEquals("{\"label\":\"a\",\"extra\":null,\"values\":[\"b\",null]}", recordMapper.toJsonText(labels));
+
+        // subclasses of BigDecimal are written as numbers
+        assertEquals("{\"tag\":\"x\",\"price\":1.50}", recordMapper.toJsonText(new Tagged("x", new SubDecimal("1.50"))));
+
+        // a registered encoder takes precedence over the built-in types, for exactly its class
+        var upperCase = RecordMapper.builder(MethodHandles.lookup())
+                .encoder(String.class, string -> JsonString.of(string.toUpperCase()))
+                .encoder(OwnString.class, string -> JsonString.of("own"))
+                .build();
+        assertEquals("{\"tag\":\"X\",\"price\":1.50}", upperCase.toJsonText(new Tagged("x", new SubDecimal("1.50"))));
+        assertEquals("{\"label\":\"own\",\"extra\":null,\"values\":[\"own\",null]}", upperCase.toJsonText(labels));
+        // the same classes in another mapper are written as before
+        assertEquals("{\"tag\":\"x\",\"price\":1.50}", recordMapper.toJsonText(new Tagged("x", new SubDecimal("1.50"))));
+    }
 }
